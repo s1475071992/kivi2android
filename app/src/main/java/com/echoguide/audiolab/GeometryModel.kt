@@ -30,7 +30,7 @@ object GeometryGenerator {
         val count = config.sourceCount.coerceIn(4, 32)
         val distance = config.distance.coerceIn(0.5f, 5f)
         val size = config.size.coerceIn(0.2f, 3f)
-        val offset = config.verticalOffset.coerceIn(-1.5f, 1.5f)
+        val offset = config.verticalOffset.coerceIn(-5f, 5f)
         return when (config.shape) {
             GeometryShape.HORIZONTAL_LINE -> horizontalLine(count, distance, size, offset)
             GeometryShape.VERTICAL_LINE -> verticalLine(count, distance, size, offset)
@@ -82,7 +82,7 @@ object GeometryGenerator {
             Vec3(
                 radialDistance * cos(angle),
                 centerY - depth * (1f - normalizedRadius),
-                distance + radialDistance * sin(angle)
+                distance + radius + radialDistance * sin(angle)
             )
         }
     }

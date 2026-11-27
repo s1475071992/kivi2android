@@ -37,10 +37,12 @@ class GeometryGeneratorTest {
     }
 
     @Test
-    fun pitHasLowerInteriorThanOuterArea() {
+    fun pitHasLowerInteriorThanOuterAreaAndStaysInFront() {
         val points = GeometryGenerator.generate(GeometryConfig(GeometryShape.PIT, 24, 2f, 1.2f, pitDepth = 0.4f))
         assertEquals(24, points.size)
         assertTrue(points.minOf { it.y } < points.maxOf { it.y })
         assertTrue(points.all { it.z > 0f })
+        val widePit = GeometryGenerator.generate(GeometryConfig(GeometryShape.PIT, 32, 0.5f, 3f))
+        assertTrue(widePit.all { it.z >= 0.49f })
     }
 }
