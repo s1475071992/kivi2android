@@ -1,6 +1,13 @@
 package com.echoguide.audiolab
 
 import android.os.Bundle
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.material3.Switch
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import kotlinx.coroutines.delay
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Canvas
@@ -55,7 +62,7 @@ class MainActivity : ComponentActivity() {
     private val audio by lazy { SpatialAudioEngine() }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MaterialTheme(colorScheme = darkColorScheme()) { LabScreen(audio) } }
+        setContent { MaterialTheme(colorScheme = darkColorScheme()) { Surface(Modifier.fillMaxSize()) { LabScreen(audio, this) } } }
     }
     override fun onDestroy() {
         audio.stop()
@@ -64,7 +71,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun LabScreen(audio: SpatialAudioEngine) {
+private fun LabScreen(audio: SpatialAudioEngine, activity: ComponentActivity) {
     var shape by remember { mutableStateOf(GeometryShape.HORIZONTAL_LINE) }
     var count by remember { mutableFloatStateOf(1f) }
     var distance by remember { mutableFloatStateOf(2f) }
@@ -74,6 +81,13 @@ private fun LabScreen(audio: SpatialAudioEngine) {
     var pitDepth by remember { mutableFloatStateOf(0.4f) }
     var volume by remember { mutableFloatStateOf(20f) }
     var playing by remember { mutableStateOf(false) }
+    var settings by remember { mutableStateOf(SonarSettings()) }
+    var status by remember { mutableStateOf(0L) }
+    var blind by remember { mutableStateOf(false) }
+    var answered by remember { mutableStateOf(false) }
+    var correct by remember { mutableStateOf(0) }
+    var trials by remember { mutableStateOf(0) }
+    var feedback by remember { mutableStateOf("") }
 
     val context = LocalContext.current
     var hrtfPath by remember { mutableStateOf<String?>(null) }
@@ -106,19 +120,44 @@ private fun LabScreen(audio: SpatialAudioEngine) {
         )
     }
     val points = remember(config) { GeometryGenerator.generate(config) }
-    val scene = remember(points, volume) { AudioScene(points, volume / 100f) }
-    LaunchedEffect(scene, playing) { if (playing) audio.update(scene) }
-    DisposableEffect(audio) { onDispose { audio.stop() } }
+    val sonarPoints = remember(config, settings) { SonarModel.points(config, settings) }
+    val scene = remember(sonarPoints, volume, settings, playing) { AudioScene(sonarPoints, volume / 100f, settings, playing) }
+    LaunchedEffect(scene) { audio.update(scene) }
+    LaunchedEffect(audio) { while (true) { status = audio.pingStatus; if (playing && !audio.isRunning()) playing = false; delay(100) } }
+    DisposableEffect(audio, activity) {
+        val observer = LifecycleEventObserver { _, event ->
+            if(event == Lifecycle.Event.ON_STOP) { audio.stop(); playing = false; status = 0L }
+        }
+        activity.lifecycle.addObserver(observer)
+        onDispose { activity.lifecycle.removeObserver(observer); audio.stop() }
+    }
+    fun requestPing(auto: Boolean) {
+        try {
+            val current = scene.copy(automatic=auto)
+            audio.start(current, hrtfPath)
+            audio.update(current)
+            playing = auto
+            if(!auto) audio.ping()
+            error = ""
+        } catch(e: Throwable) { playing=false; error=e.message ?: "音频初始化失败" }
+    }
 
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text("EchoGuide 3D Audio Lab", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Text("Steam Audio 4.8.1 · HRTF 实验 v0.2", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("v0.3 · 自研 Sonar DSP + Steam Audio 4.8.1", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
 
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { requestPing(playing); if(playing && audio.isRunning()) audio.ping() }, modifier=Modifier.weight(1f)) { Text("PING 一次") }
+            Button(onClick = { requestPing(true) }, enabled=!playing, modifier=Modifier.weight(1f)) { Text("自动 PING") }
+            OutlinedButton(onClick = { audio.stop(); playing=false; status=0L }, modifier=Modifier.weight(1f)) { Text("停止") }
+        }
+        Text("已发射 ${status ushr 32} 次 · ${if(playing) "自动" else "手动待命"}", style=MaterialTheme.typography.bodyMedium)
+        Text("请求刷新 ${String.format("%.1f",settings.rate)} Hz；有效上限 ${String.format("%.2f",SonarModel.effectiveRate(sonarPoints,settings))} Hz（防止回波重叠）",style=MaterialTheme.typography.bodySmall)
         Text("HRTF: " + hrtfLabel)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = { audio.stop(); playing = false; hrtfPath = null; hrtfLabel = "Steam Audio Default"; error = "" }) { Text("默认 HRTF") }
@@ -126,6 +165,28 @@ private fun LabScreen(audio: SpatialAudioEngine) {
         }
         if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
         Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Toggle("隐藏形状盲测", blind) {
+                    audio.stop(); playing=false; blind=it; answered=false; feedback=""
+                    if(it) { shape=GeometryShape.values().random(); count=8f }
+                }
+                if(blind) {
+                    Text("答对 $correct / $trials · 先 PING，再选答案")
+                    OutlinedButton(onClick={ audio.stop(); playing=false; shape=GeometryShape.values().random(); answered=false; feedback="" }) { Text("下一题（随机形状）") }
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement=Arrangement.spacedBy(6.dp)) {
+                        GeometryShape.values().forEach { guess ->
+                            OutlinedButton(enabled=!answered,onClick={
+                                trials++; if(guess==shape)correct++
+                                feedback=if(guess==shape) "正确" else "正确答案："+shape.label
+                                answered=true
+                            }) { Text(guess.label) }
+                        }
+                    }
+                    if(feedback.isNotEmpty())Text(feedback)
+                }
+            }
+        }
+        if(!blind) Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("几何形状", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -136,50 +197,66 @@ private fun LabScreen(audio: SpatialAudioEngine) {
             }
         }
 
-        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+        if(!blind) Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("3D 声源分布", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.weight(1f))
                     Text(points.size.toString() + " 个点", color = MaterialTheme.colorScheme.primary)
                 }
-                SourcePreview(points, shape)
-                Text("X：左右 · Y：上下 · Z：前方。每个圆点代表一个同时播放的虚拟声源。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                SourcePreview(points, shape, status.toInt())
+                Text("X：左右 · Y：上下 · Z：前方。绿色为最近一次 PING 选中的点，其余为静默候选点。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
 
         Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("参数调整", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                AdjustSlider("声源数量", count, 1f..32f, count.roundToInt().toString() + " 个", 30) { count = it.roundToInt().toFloat() }
+                AdjustSlider("几何总点数", count, 1f..32f, count.roundToInt().toString() + " 个", 30) { count = it.roundToInt().toFloat() }
                 AdjustSlider("中心距离", distance, 0.5f..5f, String.format("%.1f", distance) + " m", 44) { distance = it }
                 AdjustSlider("形状尺寸", size, 0.2f..3f, String.format("%.1f", size) + " m", 27) { size = it }
                 AdjustSlider("左右方位角", azimuth, -180f..180f, azimuth.roundToInt().toString() + "°", 71) { azimuth = it }
                 AdjustSlider("上下仰角", elevation, -90f..90f, elevation.roundToInt().toString() + "°", 35) { elevation = it }
-                if (shape == GeometryShape.PIT) {
+                if (!blind && shape == GeometryShape.PIT) {
                     AdjustSlider("凹陷深度", pitDepth, 0.1f..1.2f, String.format("%.2f", pitDepth) + " m", 21) { pitDepth = it }
                 }
                 AdjustSlider("总音量", volume, 0f..100f, volume.roundToInt().toString() + "%", 19) { volume = it }
+                AdjustSlider("每次 PING 发声点数", settings.simultaneous.toFloat(), 1f..32f, "${minOf(settings.simultaneous,points.size)} / ${points.size}", 30) { settings=settings.copy(simultaneous=it.roundToInt()) }
+                AdjustSlider("主动刷新率", settings.rate, .5f..12f, String.format("%.1f Hz",settings.rate), 22) { settings=settings.copy(rate=it) }
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(6.dp)) {
+                    PointOrder.values().forEach { order ->
+                        FilterChip(selected=settings.order==order,onClick={settings=settings.copy(order=order)},label={Text(order.label)})
+                    }
+                }
             }
         }
 
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(onClick = { try { audio.start(scene, hrtfPath); playing = true; error = "" } catch (e: Throwable) { playing = false; error = e.message ?: "HRTF 初始化失败" } }, modifier = Modifier.weight(1f)) {
-                Text(if (playing) "更新声场" else "播放声场")
-            }
-            OutlinedButton(onClick = { audio.stop(); playing = false }, modifier = Modifier.weight(1f)) {
-                Text("停止")
-            }
-        }
-
-        Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(12.dp)) {
-            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(if (playing) "正在同时播放 " + points.size + " 个声源" else "当前已停止", fontWeight = FontWeight.SemiBold)
-                Text(
-                    "每个声源独立 Steam Audio HRTF，双线性插值、100% 空间化，无混响。距离感与个体定位仍需测试。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+        Card(colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surfaceVariant)) {
+            Column(Modifier.padding(14.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
+                Text("声音特征 / 独立对照",style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.SemiBold)
+                Toggle("HRTF 三维方向",settings.hrtf){settings=settings.copy(hrtf=it)}
+                Toggle("距离音量衰减（1/r）",settings.attenuation){settings=settings.copy(attenuation=it)}
+                Toggle("发射参考声",settings.reference){settings=settings.copy(reference=it)}
+                Toggle("声呐回波延迟",settings.echoDelay){settings=settings.copy(echoDelay=it)}
+                AdjustSlider("延迟放大",settings.delayScale,1f..10f,String.format("%.1f×",settings.delayScale),17){settings=settings.copy(delayScale=it)}
+                Toggle("多普勒频移",settings.doppler){settings=settings.copy(doppler=it)}
+                AdjustSlider("模拟径向速度（正值接近）",settings.velocity,-5f..5f,String.format("%.1f m/s",settings.velocity),99){settings=settings.copy(velocity=it)}
+                AdjustSlider("多普勒放大",settings.dopplerScale,1f..20f,String.format("%.0f×",settings.dopplerScale),18){settings=settings.copy(dopplerScale=it)}
+                Text("基准 600 Hz；当前 ${String.format("%.1f",600f*SonarModel.dopplerRatio(settings))} Hz。采样跳转不产生频移。",style=MaterialTheme.typography.bodySmall)
+                Toggle("表面朝向 → 音色明暗",settings.brightness){settings=settings.copy(brightness=it)}
+                AdjustSlider("附加表面倾角",settings.tilt,-90f..90f,String.format("%.0f°",settings.tilt),35){settings=settings.copy(tilt=it)}
+                AdjustSlider("明暗强度",settings.brightnessStrength,0f..1f,String.format("%.0f%%",settings.brightnessStrength*100f),19){settings=settings.copy(brightnessStrength=it)}
+                Toggle("几何起伏 → 声音粗糙度",settings.roughness){settings=settings.copy(roughness=it)}
+                AdjustSlider("附加局部起伏 RMS",settings.roughnessMm,0f..30f,String.format("%.1f mm",settings.roughnessMm),59){settings=settings.copy(roughnessMm=it)}
+                AdjustSlider("粗糙度强度",settings.roughnessStrength,0f..1f,String.format("%.0f%%",settings.roughnessStrength*100f),19){settings=settings.copy(roughnessStrength=it)}
+                Text("固定发射 8 ms / 回波 50 ms。明暗、粗糙度为物理启发的人工映射；不推断材质。",style=MaterialTheme.typography.bodySmall)
+                if(!blind) sonarPoints.firstOrNull()?.let { p ->
+                    Text("首点：${String.format("%.2f",p.distance)} m · 回波 ${String.format("%.1f",SonarModel.delayMs(p.distance,settings))} ms · 入射余弦 ${String.format("%.2f",p.incidence)} · RMS ${String.format("%.1f",p.rmsMm)} mm",style=MaterialTheme.typography.bodySmall)
+                }
+                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick={settings=SonarSettings()}){Text("重置 DSP")}
+                    OutlinedButton(onClick={settings=settings.copy(attenuation=false,echoDelay=false,reference=false,doppler=false,brightness=false,roughness=false,hrtf=true)}){Text("仅 HRTF")}
+                }
             }
         }
         Text("仅供坐姿、安静环境下的听觉实验；不可用于行走导航，也不能替代白手杖或导盲犬。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
@@ -202,12 +279,12 @@ private fun AdjustSlider(
             Spacer(Modifier.weight(1f))
             Text(label, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
         }
-        Slider(value = value, onValueChange = change, valueRange = range, steps = steps)
+        Slider(value = value, onValueChange = change, valueRange = range, steps = steps, modifier=Modifier.semantics { contentDescription=title })
     }
 }
 
 @Composable
-private fun SourcePreview(points: List<Vec3>, shape: GeometryShape) {
+private fun SourcePreview(points: List<Vec3>, shape: GeometryShape, selected: Int) {
     Canvas(Modifier.fillMaxWidth().height(220.dp).background(Color(0xFF091421), RoundedCornerShape(12.dp))) {
         val cx = size.width / 2f
         val cy = size.height * 0.55f
@@ -246,10 +323,18 @@ private fun SourcePreview(points: List<Vec3>, shape: GeometryShape) {
             }
             drawPath(path, Color(0xFF2C879B), style = Stroke(width = 2f))
         }
-        projected.forEach { point ->
-            drawCircle(Color(0xFF31C6D4), 5.5f, point)
-            drawCircle(Color(0xAAE4FCFF), 8f, point, style = Stroke(width = 1f))
+        projected.forEachIndexed { index, point ->
+            val active=(selected and (1 shl index)) != 0
+            drawCircle(if(active) Color(0xFF45E6A0) else Color(0xFF476478), 5.5f, point)
+            if(active) drawCircle(Color(0xAAE4FCFF), 8f, point, style = Stroke(width = 1f))
         }
         drawCircle(Color(0xFFFFC857), 7f, Offset(cx, cy))
+    }
+}
+@Composable
+private fun Toggle(title:String, value:Boolean, change:(Boolean)->Unit){
+    Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
+        Text(title,modifier=Modifier.weight(1f))
+        Switch(checked=value,onCheckedChange=change,modifier=Modifier.semantics { contentDescription=title })
     }
 }

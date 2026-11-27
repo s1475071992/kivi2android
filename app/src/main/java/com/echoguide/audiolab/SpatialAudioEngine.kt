@@ -6,12 +6,20 @@ import android.media.AudioTrack
 import android.os.Build
 import android.os.Process
 import kotlin.math.max
+import java.util.concurrent.atomic.AtomicBoolean
 
-data class AudioScene(val sources: List<Vec3>, val masterVolume: Float)
+data class AudioScene(val sources: List<SonarPoint>, val masterVolume: Float, val settings: SonarSettings = SonarSettings(), val automatic: Boolean = false) {
+    val controls = SonarModel.controls(settings, automatic)
+}
 
 class SpatialAudioEngine {
     @Volatile private var scene = AudioScene(emptyList(), 0f)
     @Volatile private var running = false
+    private val manual = AtomicBoolean(false)
+    @Volatile var pingStatus: Long = 0L
+        private set
+    fun ping() { manual.set(true) }
+    fun isRunning() = running
     private var track: AudioTrack? = null
     private var worker: Thread? = null
 
@@ -42,16 +50,18 @@ class SpatialAudioEngine {
             worker = Thread({
                 try {
                     Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
-                    val positions = FloatArray(96)
+                    val positions = FloatArray(160)
                     val pcm = ShortArray(1024)
                     while (running && !Thread.currentThread().isInterrupted) {
                         val s = scene
                         s.sources.forEachIndexed { i, p ->
-                            positions[3*i] = p.x
-                            positions[3*i+1] = p.y
-                            positions[3*i+2] = p.z
+                            positions[5*i] = p.position.x
+                            positions[5*i+1] = p.position.y
+                            positions[5*i+2] = p.position.z
+                            positions[5*i+3] = p.incidence
+                            positions[5*i+4] = p.rmsMm
                         }
-                        SteamNative.render(handle, positions, s.sources.size, s.masterVolume, pcm)
+                        pingStatus = SteamNative.render(handle, positions, s.sources.size, s.masterVolume, s.controls, manual.getAndSet(false), pcm)
                         var offset = 0
                         while (offset < pcm.size && running) {
                             val n = output.write(pcm, offset, pcm.size-offset, AudioTrack.WRITE_BLOCKING)
@@ -78,11 +88,13 @@ class SpatialAudioEngine {
         track?.release()
         track = null
         worker = null
+        manual.set(false)
+        pingStatus = 0L
     }
 }
 object SteamNative {
     init { System.loadLibrary("echoguide_hrtf") }
     external fun create(sofaPath: String?): Long
-    external fun render(handle: Long, positions: FloatArray, count: Int, volume: Float, pcm: ShortArray)
+    external fun render(handle: Long, positions: FloatArray, count: Int, volume: Float, controls: FloatArray, manual: Boolean, pcm: ShortArray): Long
     external fun destroy(handle: Long)
 }

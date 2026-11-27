@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - echo-guide-audio-lab
   pull_request:
     branches:
       - main
@@ -51,6 +50,8 @@ jobs:
           for arch in android-armv8 android-armv7 android-x64; do
             test -f "third_party/steamaudio/lib/$arch/libphonon.so"
           done
+      - name: Test native sonar DSP
+        run: g++ -std=c++17 -O2 tools/sonar_dsp_test.cpp -o /tmp/sonar-test && /tmp/sonar-test
       - name: Run unit tests and build Debug APK
         run: |
           for attempt in 1 2 3; do
@@ -62,7 +63,36 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: echoguide-v0.2-debug-apk
+          name: echoguide-v0.3-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+  publish:
+    needs: build
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'echo-guide-audio-lab'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: echoguide-v0.3-debug-apk
+          path: /tmp/echo-v03
+      - name: Verify APK and publish prerelease
+        run: |
+          mv /tmp/echo-v03/app-debug.apk /tmp/echo-v03/EchoGuide-v0.3.apk
+          unzip -tq /tmp/echo-v03/EchoGuide-v0.3.apk
+          unzip -l /tmp/echo-v03/EchoGuide-v0.3.apk | grep libphonon.so
+          sha256sum /tmp/echo-v03/EchoGuide-v0.3.apk
+          if gh release view v0.3.0 >/dev/null 2>&1; then
+            echo "v0.3.0 already exists; not overwriting an existing release"
+            exit 1
+          fi
+          gh release create v0.3.0 /tmp/echo-v03/EchoGuide-v0.3.apk --target "$HEAD_SHA" --title "EchoGuide v0.3 - Sonar DSP Lab" --notes "Seated headphone experiments only. Manual and automatic ping, Steam Audio HRTF, distance delay and attenuation, simulated Doppler, incidence brightness, local geometry roughness. Not a navigation aid." --prerelease
+          gh release view v0.3.0 --json url,assets
