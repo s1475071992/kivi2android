@@ -5,6 +5,9 @@ on:
     branches:
       - main
       - echo-guide-audio-lab
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
