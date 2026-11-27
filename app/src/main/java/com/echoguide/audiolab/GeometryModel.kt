@@ -22,21 +22,30 @@ data class GeometryConfig(
     val distance: Float = 2f,
     val size: Float = 1.2f,
     val verticalOffset: Float = 0f,
-    val pitDepth: Float = 0.4f
+    val pitDepth: Float = 0.4f,
+    val azimuth: Float = 0f,
+    val elevation: Float = 0f
 )
 
 object GeometryGenerator {
     fun generate(config: GeometryConfig): List<Vec3> {
-        val count = config.sourceCount.coerceIn(4, 32)
+        val count = config.sourceCount.coerceIn(1, 32)
         val distance = config.distance.coerceIn(0.5f, 5f)
         val size = config.size.coerceIn(0.2f, 3f)
         val offset = config.verticalOffset.coerceIn(-5f, 5f)
-        return when (config.shape) {
+        val local = if (count == 1) listOf(Vec3(0f, offset, distance)) else when (config.shape) {
             GeometryShape.HORIZONTAL_LINE -> horizontalLine(count, distance, size, offset)
             GeometryShape.VERTICAL_LINE -> verticalLine(count, distance, size, offset)
             GeometryShape.RING -> ring(count, distance, size, offset)
             GeometryShape.RECTANGLE -> rectangle(count, distance, size, offset)
             GeometryShape.PIT -> pit(count, distance, size, offset, config.pitDepth.coerceIn(0.1f, 1.2f))
+        }
+        val az = Math.toRadians(config.azimuth.toDouble()).toFloat()
+        val el = Math.toRadians(config.elevation.toDouble()).toFloat()
+        return local.map { p ->
+            val y = p.y * cos(el) + p.z * sin(el)
+            val z = p.z * cos(el) - p.y * sin(el)
+            Vec3(p.x * cos(az) + z * sin(az), y, z * cos(az) - p.x * sin(az))
         }
     }
 

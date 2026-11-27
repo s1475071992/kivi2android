@@ -45,4 +45,22 @@ class GeometryGeneratorTest {
         val widePit = GeometryGenerator.generate(GeometryConfig(GeometryShape.PIT, 32, 0.5f, 3f))
         assertTrue(widePit.all { it.z >= 0.49f })
     }
+
+    @Test
+    fun singleSourceAtAllCardinalDirections() {
+        for (shape in GeometryShape.values()) {
+            val p = GeometryGenerator.generate(GeometryConfig(shape, 1, 2f, azimuth = 90f)).single()
+            assertEquals(2f, p.x, 0.0001f)
+            assertEquals(0f, p.y, 0.0001f)
+            assertEquals(0f, p.z, 0.0001f)
+        }
+        val up = GeometryGenerator.generate(GeometryConfig(sourceCount = 1, elevation = 90f)).single()
+        assertEquals(2f, up.y, 0.0001f)
+        val down = GeometryGenerator.generate(GeometryConfig(sourceCount = 1, elevation = -90f)).single()
+        assertEquals(-2f, down.y, 0.0001f)
+        val back = GeometryGenerator.generate(GeometryConfig(sourceCount = 1, azimuth = 180f)).single()
+        assertEquals(-2f, back.z, 0.0001f)
+        val left = GeometryGenerator.generate(GeometryConfig(sourceCount = 1, azimuth = -90f)).single()
+        assertEquals(-2f, left.x, 0.0001f)
+    }
 }

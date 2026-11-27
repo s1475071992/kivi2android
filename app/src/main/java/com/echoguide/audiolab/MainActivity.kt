@@ -45,7 +45,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlin.math.atan2
 import kotlin.math.roundToInt
-import kotlin.math.tan
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import java.io.File
+import kotlin.math.sqrt
 
 class MainActivity : ComponentActivity() {
     private val audio by lazy { SpatialAudioEngine() }
@@ -62,21 +66,42 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun LabScreen(audio: SpatialAudioEngine) {
     var shape by remember { mutableStateOf(GeometryShape.HORIZONTAL_LINE) }
-    var count by remember { mutableFloatStateOf(8f) }
+    var count by remember { mutableFloatStateOf(1f) }
     var distance by remember { mutableFloatStateOf(2f) }
     var size by remember { mutableFloatStateOf(1.2f) }
+    var azimuth by remember { mutableFloatStateOf(0f) }
     var elevation by remember { mutableFloatStateOf(0f) }
     var pitDepth by remember { mutableFloatStateOf(0.4f) }
-    var volume by remember { mutableFloatStateOf(35f) }
+    var volume by remember { mutableFloatStateOf(20f) }
     var playing by remember { mutableStateOf(false) }
 
-    val config = remember(shape, count, distance, size, elevation, pitDepth) {
+    val context = LocalContext.current
+    var hrtfPath by remember { mutableStateOf<String?>(null) }
+    var hrtfLabel by remember { mutableStateOf("Steam Audio Default") }
+    var error by remember { mutableStateOf("") }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            audio.stop()
+            playing = false
+            try {
+                val file = File.createTempFile("hrtf-", ".sofa", context.cacheDir)
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    file.outputStream().use { output -> input.copyTo(output) }
+                } ?: error("无法读取文件")
+                hrtfPath = file.absolutePath
+                hrtfLabel = "自定义 SOFA"
+                error = ""
+            } catch (e: Exception) { error = e.message ?: "无法读取 SOFA" }
+        }
+    }
+    val config = remember(shape, count, distance, size, azimuth, elevation, pitDepth) {
         GeometryConfig(
             shape = shape,
             sourceCount = count.roundToInt(),
             distance = distance,
             size = size,
-            verticalOffset = tan(Math.toRadians(elevation.toDouble())).toFloat() * distance,
+            azimuth = azimuth,
+            elevation = elevation,
             pitDepth = pitDepth
         )
     }
@@ -91,9 +116,15 @@ private fun LabScreen(audio: SpatialAudioEngine) {
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text("EchoGuide 3D Audio Lab", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Text("多声源空间几何模拟器 · Android POC", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Steam Audio 4.8.1 · HRTF 实验 v0.2", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
 
+        Text("HRTF: " + hrtfLabel)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { audio.stop(); playing = false; hrtfPath = null; hrtfLabel = "Steam Audio Default"; error = "" }) { Text("默认 HRTF") }
+            OutlinedButton(onClick = { picker.launch(arrayOf("*/*")) }) { Text("导入 SOFA") }
+        }
+        if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
         Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("几何形状", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -120,10 +151,11 @@ private fun LabScreen(audio: SpatialAudioEngine) {
         Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("参数调整", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                AdjustSlider("声源数量", count, 4f..32f, count.roundToInt().toString() + " 个", 27) { count = it.roundToInt().toFloat() }
-                AdjustSlider("前方距离", distance, 0.5f..5f, String.format("%.1f", distance) + " m", 44) { distance = it }
+                AdjustSlider("声源数量", count, 1f..32f, count.roundToInt().toString() + " 个", 30) { count = it.roundToInt().toFloat() }
+                AdjustSlider("中心距离", distance, 0.5f..5f, String.format("%.1f", distance) + " m", 44) { distance = it }
                 AdjustSlider("形状尺寸", size, 0.2f..3f, String.format("%.1f", size) + " m", 27) { size = it }
-                AdjustSlider("垂直角度", elevation, -45f..45f, elevation.roundToInt().toString() + "°", 17) { elevation = it }
+                AdjustSlider("左右方位角", azimuth, -180f..180f, azimuth.roundToInt().toString() + "°", 71) { azimuth = it }
+                AdjustSlider("上下仰角", elevation, -90f..90f, elevation.roundToInt().toString() + "°", 35) { elevation = it }
                 if (shape == GeometryShape.PIT) {
                     AdjustSlider("凹陷深度", pitDepth, 0.1f..1.2f, String.format("%.2f", pitDepth) + " m", 21) { pitDepth = it }
                 }
@@ -132,7 +164,7 @@ private fun LabScreen(audio: SpatialAudioEngine) {
         }
 
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(onClick = { audio.start(scene); playing = true }, modifier = Modifier.weight(1f)) {
+            Button(onClick = { try { audio.start(scene, hrtfPath); playing = true; error = "" } catch (e: Throwable) { playing = false; error = e.message ?: "HRTF 初始化失败" } }, modifier = Modifier.weight(1f)) {
                 Text(if (playing) "更新声场" else "播放声场")
             }
             OutlinedButton(onClick = { audio.stop(); playing = false }, modifier = Modifier.weight(1f)) {
@@ -144,7 +176,7 @@ private fun LabScreen(audio: SpatialAudioEngine) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(if (playing) "正在同时播放 " + points.size + " 个声源" else "当前已停止", fontWeight = FontWeight.SemiBold)
                 Text(
-                    "本版使用 ITD / ILD 双耳定位近似，不是个性化实测 HRTF；上下、前后定位需实际耳机测试。",
+                    "每个声源独立 Steam Audio HRTF，双线性插值、100% 空间化，无混响。距离感与个体定位仍需测试。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -179,10 +211,10 @@ private fun SourcePreview(points: List<Vec3>, shape: GeometryShape) {
     Canvas(Modifier.fillMaxWidth().height(220.dp).background(Color(0xFF091421), RoundedCornerShape(12.dp))) {
         val cx = size.width / 2f
         val cy = size.height * 0.55f
-        val scale = minOf(size.width * 0.37f, size.height * 0.42f)
+        val radius = points.maxOfOrNull { sqrt(it.x * it.x + it.y * it.y + it.z * it.z) }?.coerceAtLeast(1f) ?: 1f
+        val scale = minOf(size.width, size.height) * 0.36f / radius
         val projected = points.map { point ->
-            val perspective = 1f / (0.8f + point.z * 0.14f)
-            Offset(cx + point.x * scale * perspective, cy - point.y * scale * perspective + (point.z - 2f) * 3f)
+            Offset(cx + (point.x + point.z * 0.38f) * scale, cy - (point.y + point.z * 0.4f) * scale)
         }
         drawLine(Color(0xFF466078), Offset(cx, 10f), Offset(cx, size.height - 10f), 1f)
         drawLine(Color(0xFF466078), Offset(10f, cy), Offset(size.width - 10f, cy), 1f)
@@ -218,6 +250,6 @@ private fun SourcePreview(points: List<Vec3>, shape: GeometryShape) {
             drawCircle(Color(0xFF31C6D4), 5.5f, point)
             drawCircle(Color(0xAAE4FCFF), 8f, point, style = Stroke(width = 1f))
         }
-        drawCircle(Color(0xFFFFC857), 7f, Offset(cx, size.height - 16f))
+        drawCircle(Color(0xFFFFC857), 7f, Offset(cx, cy))
     }
 }
