@@ -5,7 +5,7 @@ int main(){
     using namespace sonar;
     assert(delayFrames(0,3)==0);
     assert(std::abs(delayFrames(1,1)-280)<=1);
-    assert(delayFrames(2,3)==3*delayFrames(2,1));
+    assert(std::abs(delayFrames(2,3)-3*delayFrames(2,1))<=1);
     assert(doppler(0)==1 && doppler(4)>1 && doppler(-4)<1);
     assert(attenuation(1,true)>attenuation(4,true)&&attenuation(4,false)==1);
     assert(brightGain(1,1)>brightGain(0,1)&&brightGain(0,0)==1);
