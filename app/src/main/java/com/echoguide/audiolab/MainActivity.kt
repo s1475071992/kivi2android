@@ -54,6 +54,7 @@ private fun fmt(x:Float,d:Int=1)=String.format(java.util.Locale.US,"%.${d}f",x)
     var scope by remember{mutableStateOf(EditScope.SINGLE)}
     var auto by remember{mutableStateOf(false)}
     var status by remember{mutableLongStateOf(0L)}
+    var diagnostic by remember{mutableStateOf("")}
     var sofa by remember{mutableStateOf<String?>(null)}
     var error by remember{mutableStateOf("")}
     var tab by remember{mutableIntStateOf(0)}
@@ -77,7 +78,7 @@ private fun fmt(x:Float,d:Int=1)=String.format(java.util.Locale.US,"%.${d}f",x)
     fun edit(change:(Cell)->Cell){val indices=when(scope){EditScope.ALL->cells.indices.toSet();EditScope.MULTI->selected;EditScope.SINGLE->setOf(anchor)};cells=cells.mapIndexed{i,c->if(i in indices)change(c) else c}}
     // The snapshot updates only on normal lab screens. Trial playback is isolated.
     LaunchedEffect(currentScene,tab){if(tab!=2 && auto)audio.update(currentScene)}
-    LaunchedEffect(audio){while(true){status=audio.pingStatus;delay(40)}}
+    LaunchedEffect(audio){while(true){status=audio.pingStatus;diagnostic="PCM 已生成 ${(status ushr 9) and 511} 格 / 非零 ${(status ushr 18) and 511} 格；已写入 ${audio.submittedFrames} 帧；设备播放头 ${audio.playedFrames} 帧；欠载 ${audio.underruns} 次";if(audio.outputError.isNotEmpty())error=audio.outputError;if(auto&&!audio.isRunning())auto=false;delay(40)}}
     DisposableEffect(activity,audio){val observer=LifecycleEventObserver{_,event->if(event==Lifecycle.Event.ON_STOP){audio.stop();auto=false;status=0L}};activity.lifecycle.addObserver(observer);onDispose{activity.lifecycle.removeObserver(observer);audio.stop()}}
     val pickSofa=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()){uri->
         if(uri!=null){stop();try{val f=File.createTempFile("hrtf-",".sofa",context.cacheDir);context.contentResolver.openInputStream(uri)?.use{input->f.outputStream().use{input.copyTo(it)}}?:error("无法读取 SOFA");sofa=f.absolutePath;error=""}catch(e:Exception){error=e.message?:"SOFA 读取失败"}}
@@ -113,7 +114,7 @@ private fun fmt(x:Float,d:Int=1)=String.format(java.util.Locale.US,"%.${d}f",x)
     fun newTrial(){stop();val preset=presets.random();val t=Trial(trialKind,if(trialKind==TrialKind.SHAPE)presets.indexOf(preset) else (0..1).random(),android.os.SystemClock.elapsedRealtime(),preset);trial=t;result="";trialAudio(t)}
     fun answer(i:Int){val t=trial?:return;val ok=i==t.answer;val elapsed=android.os.SystemClock.elapsedRealtime()-t.start;if(ok)correct++;val config=SceneCodec.encode(g,sceneConfig,s,emptyList()).replace("\"", "\"\"");records=records+("${t.kind.name},${t.answer},$i,$ok,$elapsed,${g.rows},${g.cols},${s.slot},${s.duration},$deltaAngle,$deltaDistance,$deltaTilt,$deltaRough,$deltaVelocity,\"$config\"");result=if(ok)"正确" else "正确答案："+if(t.kind==TrialKind.SHAPE)t.preset.label else if(t.answer==0)"A" else "B";trial=null;stop()}
     Column(Modifier.fillMaxSize().safeDrawingPadding().padding(12.dp)){
-        Text("EchoGuide · v0.4",style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.Bold)
+        Text("EchoGuide · v0.4.1",style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.Bold)
         Text("空间栅格听觉实验室 · Steam Audio HRTF",style=MaterialTheme.typography.bodySmall)
         Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(6.dp)){
             Button(onClick={manual()},modifier=Modifier.weight(1f),enabled=tab!=2){Text("PING")}
@@ -128,7 +129,13 @@ private fun fmt(x:Float,d:Int=1)=String.format(java.util.Locale.US,"%.${d}f",x)
             if(tab==0){
                 Text("深度栅格 · ${g.rows}×${g.cols} · ${cells.count{ScanModel.gain(it,s)>0f}} 格发声",style=MaterialTheme.typography.titleMedium)
                 Text("第 ${status ushr 32} 帧 · ${if(auto)"循环扫描" else "手动"} · ${fmt(g.rows*g.cols*s.slot/1000f,2)} 秒/帧")
-                val active=(status and 0xffffffffL).toInt()-1
+                val active=(status and 511L).toInt()-1
+                Text(diagnostic,style=MaterialTheme.typography.bodySmall)
+                Row(horizontalArrangement=Arrangement.spacedBy(6.dp)){
+                    OutlinedButton(onClick={val ng=GridConfig();stop();g=ng;cells=List(48){Cell(distance=2f)};anchor=0;selected=setOf(0);val ts=s.copy(slot=100f,duration=50f,gap=0f,volume=20f,hrtf=true,attenuation=false,filtering=false,doppler=false,brightness=false,roughness=false,wave=Wave.HARMONIC);s=ts;manual(ScanModel.packet(ng,cells,ts),ts)}){Text("48 格校验 HRTF")}
+                    OutlinedButton(onClick={val ng=GridConfig();stop();g=ng;cells=List(48){Cell(distance=2f)};anchor=0;selected=setOf(0);val ts=s.copy(slot=100f,duration=50f,gap=0f,volume=20f,hrtf=false,attenuation=false,filtering=false,doppler=false,brightness=false,roughness=false,wave=Wave.HARMONIC);s=ts;manual(ScanModel.packet(ng,cells,ts),ts)}){Text("48 格校验单声道")}
+                }
+                Text("校验：48 个固定 50ms 脉冲，间隔 50ms，总计 4.8 秒；校验覆盖当前栅格与声音设置。",style=MaterialTheme.typography.bodySmall)
                 Column(Modifier.horizontalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(3.dp)){
                     repeat(g.rows){r->Row(horizontalArrangement=Arrangement.spacedBy(3.dp)){
                         repeat(g.cols){c->val i=r*g.cols+c;val cell=cells[i];val playing=i==active;val marked=i in selected;val gain=ScanModel.gain(cell,s)

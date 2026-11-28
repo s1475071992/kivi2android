@@ -15,6 +15,7 @@ struct Engine {
     float mono[BLOCK]{},left[BLOCK]{},right[BLOCK]{},signal[MAX_SLOT]{},slotL[MAX_SLOT]{},slotR[MAX_SLOT]{};
     int total=0,index=0,slot=960,offset=0,gapLeft=0,shown=-1;
     uint32_t serial=0;bool active=false,pending=false;float gain=0;
+    int completed=0,audible=0;bool slotNonzero=false;
     ~Engine(){if(effect)iplBinauralEffectRelease(&effect);if(hrtf)iplHRTFRelease(&hrtf);if(context)iplContextRelease(&context);}
     bool init(const char* sofa){
         IPLContextSettings cs{};cs.version=STEAMAUDIO_VERSION;
@@ -26,7 +27,7 @@ struct Engine {
         return iplBinauralEffectCreate(context,&as,&bs,&effect)==IPL_STATUS_SUCCESS;
     }
     void prepare(){
-        const float* q=snapshot+index*8;shown=int(q[7]);offset=0;
+        const float* q=snapshot+index*8;shown=int(q[7]);offset=0;slotNonzero=false;
         std::fill_n(slotL,slot,0.f);std::fill_n(slotR,slot,0.f);
         if(q[6]<=0||gain<=0)return;
         int n=length(controls[1],slot);wave(signal,n,int(controls[5]),q[5],q[3],q[4],controls[3],controls[4]);
@@ -45,7 +46,7 @@ struct Engine {
         for(int j=0;j<std::min(96,slot);j++){float f=float(j)/96.f;slotL[slot-1-j]*=f;slotR[slot-1-j]*=f;}
     }
     void begin(const float* q,int n,float volume,const float* p){
-        std::copy_n(q,n*8,snapshot);std::copy_n(p,8,controls);total=n;index=0;gain=clamp01(volume);
+        std::copy_n(q,n*8,snapshot);std::copy_n(p,8,controls);total=n;index=0;gain=clamp01(volume);completed=0;audible=0;
         slot=frames(p[0]);active=true;serial++;prepare();
     }
     uint64_t render(const float* q,int n,float volume,const float* p,bool manual,jshort* pcm){
@@ -58,7 +59,9 @@ struct Engine {
             float l=0,r=0;
             if(active){
                 l=slotL[offset];r=slotR[offset];offset++;
+                if(std::abs(l)*32767.f>=1.f||std::abs(r)*32767.f>=1.f)slotNonzero=true;
                 if(offset==slot){
+                    completed++;if(slotNonzero)audible++;
                     index++;
                     if(index==total){active=false;shown=-1;gapLeft=int(std::clamp(controls[7],0.f,2000.f)*48.f);}
                     else prepare();
@@ -66,7 +69,7 @@ struct Engine {
             }
             pcm[j*2]=jshort(std::clamp(l,-.8f,.8f)*32767.f);pcm[j*2+1]=jshort(std::clamp(r,-.8f,.8f)*32767.f);
         }
-        return (uint64_t(serial)<<32)|uint32_t(shown+1);
+        return (uint64_t(serial)<<32)|(uint32_t(audible)<<18)|(uint32_t(completed)<<9)|uint32_t(shown+1);
     }
 };
 extern "C" JNIEXPORT jlong JNICALL Java_com_echoguide_audiolab_SteamNative_create(JNIEnv* env,jobject,jstring path){
