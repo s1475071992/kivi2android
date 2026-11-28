@@ -76,7 +76,7 @@ private fun fmt(x:Float,d:Int=1)=String.format(java.util.Locale.US,"%.${d}f",x)
     fun regenerate(ng:GridConfig=g,ns:SceneConfig=sceneConfig){stop();g=ng;sceneConfig=ns;cells=ScanModel.generate(ng,ns);anchor=0;selected=setOf(0);trial=null}
     fun edit(change:(Cell)->Cell){val indices=when(scope){EditScope.ALL->cells.indices.toSet();EditScope.MULTI->selected;EditScope.SINGLE->setOf(anchor)};cells=cells.mapIndexed{i,c->if(i in indices)change(c) else c}}
     // The snapshot updates only on normal lab screens. Trial playback is isolated.
-    LaunchedEffect(currentScene,tab){if(tab!=2)audio.update(currentScene)}
+    LaunchedEffect(currentScene,tab){if(tab!=2 && auto)audio.update(currentScene)}
     LaunchedEffect(audio){while(true){status=audio.pingStatus;delay(40)}}
     DisposableEffect(activity,audio){val observer=LifecycleEventObserver{_,event->if(event==Lifecycle.Event.ON_STOP){audio.stop();auto=false;status=0L}};activity.lifecycle.addObserver(observer);onDispose{activity.lifecycle.removeObserver(observer);audio.stop()}}
     val pickSofa=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()){uri->
@@ -111,7 +111,7 @@ private fun fmt(x:Float,d:Int=1)=String.format(java.util.Locale.US,"%.${d}f",x)
         manual(p,ts)
     }
     fun newTrial(){stop();val preset=presets.random();val t=Trial(trialKind,if(trialKind==TrialKind.SHAPE)presets.indexOf(preset) else (0..1).random(),android.os.SystemClock.elapsedRealtime(),preset);trial=t;result="";trialAudio(t)}
-    fun answer(i:Int){val t=trial?:return;val ok=i==t.answer;val elapsed=android.os.SystemClock.elapsedRealtime()-t.start;if(ok)correct++;val config=SceneCodec.encode(g,sceneConfig,s,emptyList()).replace("\"","\\"\"");records=records+("${t.kind.name},${t.answer},$i,$ok,$elapsed,${g.rows},${g.cols},${s.slot},${s.duration},$deltaAngle,$deltaDistance,$deltaTilt,$deltaRough,$deltaVelocity,\"$config\"");result=if(ok)"正确" else "正确答案："+if(t.kind==TrialKind.SHAPE)t.preset.label else if(t.answer==0)"A" else "B";trial=null;stop()}
+    fun answer(i:Int){val t=trial?:return;val ok=i==t.answer;val elapsed=android.os.SystemClock.elapsedRealtime()-t.start;if(ok)correct++;val config=SceneCodec.encode(g,sceneConfig,s,emptyList()).replace("\"", "\"\"");records=records+("${t.kind.name},${t.answer},$i,$ok,$elapsed,${g.rows},${g.cols},${s.slot},${s.duration},$deltaAngle,$deltaDistance,$deltaTilt,$deltaRough,$deltaVelocity,\"$config\"");result=if(ok)"正确" else "正确答案："+if(t.kind==TrialKind.SHAPE)t.preset.label else if(t.answer==0)"A" else "B";trial=null;stop()}
     Column(Modifier.fillMaxSize().safeDrawingPadding().padding(12.dp)){
         Text("EchoGuide · v0.4",style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.Bold)
         Text("空间栅格听觉实验室 · Steam Audio HRTF",style=MaterialTheme.typography.bodySmall)
