@@ -1,0 +1,106 @@
+name: Android Debug APK
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android platform
+        run: |
+          echo "Android SDK: $ANDROID_HOME"
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -path '*/bin/sdkmanager' -type f | sort -V | tail -n 1)"
+          test -x "$SDKMANAGER"
+          "$SDKMANAGER" --version
+          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Fetch pinned Steam Audio SDK
+        run: |
+          mkdir -p third_party/steamaudio
+          curl -fL --retry 5 --retry-all-errors https://github.com/ValveSoftware/steam-audio/releases/download/v4.8.1/steamaudio_4.8.1.zip -o /tmp/steamaudio.zip
+          unzip -q /tmp/steamaudio.zip -d /tmp/steam-sdk
+          HEADER=$(find /tmp/steam-sdk -name phonon.h -print -quit)
+          test -n "$HEADER"
+          SDK=$(dirname "$(dirname "$HEADER")")
+          cp -a "$SDK/include" "$SDK/lib" third_party/steamaudio/
+          for arch in android-armv8 android-armv7 android-x64; do
+            test -f "third_party/steamaudio/lib/$arch/libphonon.so"
+          done
+      - name: Test native sonar DSP
+        run: g++ -std=c++17 -O2 tools/sonar_dsp_test.cpp -o /tmp/sonar-test && /tmp/sonar-test && g++ -std=c++17 -O2 tools/scan_dsp_test.cpp -o /tmp/scan-test && /tmp/scan-test
+      - name: Regression test actual Steam Audio PCM rendering
+        run: |
+          SDK=third_party/steamaudio
+          LIB=$(find "$SDK/lib" -name libphonon.so -path '*linux*' | while read -r p; do if file "$p" | grep -q 'x86-64'; then echo "$p"; break; fi; done)
+          test -n "$LIB"
+          LIBDIR=$(realpath "$(dirname "$LIB")")
+          g++ -std=c++17 -O2 -I"$SDK/include" -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" tools/scan_render_test.cpp -L"$LIBDIR" -Wl,-rpath,"$LIBDIR" -lphonon -o /tmp/scan-render-test
+          /tmp/scan-render-test
+      - name: Run unit tests and build Debug APK
+        run: |
+          for attempt in 1 2 3; do
+            if gradle testDebugUnitTest assembleDebug --no-daemon --max-workers=2; then exit 0; fi
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            sleep 30
+          done
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: echoguide-v0.4.1-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: build
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'echo-guide-audio-lab'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: echoguide-v0.4.1-debug-apk
+          path: /tmp/echo-v04
+      - name: Verify APK and publish prerelease
+        run: |
+          mv /tmp/echo-v04/app-debug.apk /tmp/echo-v04/EchoGuide-v0.4.1.apk
+          unzip -tq /tmp/echo-v04/EchoGuide-v0.4.1.apk
+          unzip -l /tmp/echo-v04/EchoGuide-v0.4.1.apk | grep libphonon.so
+          sha256sum /tmp/echo-v04/EchoGuide-v0.4.1.apk
+          if gh release view v0.4.1 >/dev/null 2>&1; then
+            echo "v0.4.1 already exists; not overwriting an existing release"
+            exit 1
+          fi
+          gh release create v0.4.1 /tmp/echo-v04/EchoGuide-v0.4.1.apk --target "$HEAD_SHA" --title "EchoGuide v0.4.1 - Scan diagnostics" --notes "Seated headphone experiments only. Fixed-slot raster scan, manual grid editing, distance filtering and optional DSP cues. Not a navigation aid." --prerelease
+          gh release view v0.4.1 --json url,assets

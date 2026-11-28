@@ -1,0 +1,30 @@
+name: Publish existing EchoGuide v0.2 APK
+on:
+  pull_request:
+    branches: [main]
+    paths: ['.github/workflows/publish-v02.yml']
+permissions:
+  actions: read
+  contents: write
+jobs:
+  publish:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'echo-guide-audio-lab'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Retrieve successful v0.2 build
+        run: |
+          gh run download 46019584784 --name echoguide-v0.2-debug-apk --dir /tmp/echo-v02
+          mv /tmp/echo-v02/app-debug.apk /tmp/echo-v02/EchoGuide-v0.2.apk
+          unzip -tq /tmp/echo-v02/EchoGuide-v0.2.apk
+          sha256sum /tmp/echo-v02/EchoGuide-v0.2.apk
+      - name: Publish public prerelease download
+        run: |
+          if gh release view v0.2.0 >/dev/null 2>&1; then
+            gh release upload v0.2.0 /tmp/echo-v02/EchoGuide-v0.2.apk --clobber
+          else
+            gh release create v0.2.0 /tmp/echo-v02/EchoGuide-v0.2.apk --target f71056886811805c709604706b420523feaea00c --title "EchoGuide v0.2 - Steam Audio HRTF" --notes "Android debug simulator for seated HRTF listening experiments only; not a navigation aid. Built in Actions run 46019584784." --prerelease
+          fi
+          gh release view v0.2.0 --json url,assets
